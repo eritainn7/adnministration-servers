@@ -20,22 +20,58 @@ services:
     networks:
       - kubsu_network
 
+  tests:
+    build: .
+    container_name: kubsu_tests
+    environment:
+      DATABASE_URL: postgresql+psycopg://kubsu:kubsu@postgres:5432/kubsu
+      TESTING: 1
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 2 &&
+        echo 'Running tests...' &&
+        pytest tests/ -v -s --tb=short &&
+        TEST_EXIT_CODE=$$? &&
+        if [ $$TEST_EXIT_CODE -eq 0 ]; then
+          echo '✓ All tests passed successfully!';
+          exit 0;
+        else
+          echo '✗ Tests failed with exit code ' $$TEST_EXIT_CODE;
+          exit $$TEST_EXIT_CODE;
+        fi
+      "
+    networks:
+      - kubsu_network
+    restart: "no"
+
   app:
     build: .
     container_name: kubsu_app
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+psycopg://kubsu:kubsu@postgres:5432/kubsu
+      DATABASE_URL: postgresql+psycopg://kubsu:kubsu@postgres:5432/kubsu
+      PYTHONPATH: /app
     depends_on:
       postgres:
         condition: service_healthy
+      tests:
+        condition: service_completed_successfully
     volumes:
       - ./src:/app/src
-      - ./pyproject.toml:/app/pyproject.toml
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - kubsu_network
+    restart: "no"
 
 networks:
   kubsu_network:

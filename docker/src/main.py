@@ -1,24 +1,30 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from src import models, schemas
 from src.database import init_db, get_db
 
-app = FastAPI()
 
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     await init_db()
+    yield
+    # Shutdown (если нужно)
+    pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/users/", response_model=schemas.User)
 async def create_user(user: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
-    user = models.User(name=user.name)
-    db.add(user)
+    db_user = models.User(name=user.name)
+    db.add(db_user)
     await db.commit()
-    await db.refresh(user)
-    return user
+    await db.refresh(db_user)
+    return db_user
 
 
 @app.get("/users/", response_model=list[schemas.User])
@@ -47,6 +53,7 @@ async def update_user(user_id: int, user: schemas.UserCreate, db: AsyncSession =
 
     db_user.name = user.name
     await db.commit()
+    await db.refresh(db_user)
     
     return db_user
 
