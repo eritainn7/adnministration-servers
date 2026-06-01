@@ -22,7 +22,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[test]
+          pip install \
+            fastapi==0.115.8 \
+            uvicorn==0.34.0 \
+            sqlalchemy==2.0.37 \
+            psycopg-binary==3.2.4 \
+            psycopg==3.2.4 \
+            pytest==8.4.2 \
+            pytest-asyncio==0.25.3 \
+            httpx==0.28.1
       
       - name: Start PostgreSQL
         run: |
@@ -33,11 +41,21 @@ jobs:
             -e POSTGRES_DB=kubsu \
             -p 5432:5432 \
             postgres:16-alpine
-          sleep 5
+          
+          # Ждем полного запуска PostgreSQL
+          for i in {1..15}; do
+            if docker exec postgres-test pg_isready -U kubsu 2>/dev/null; then
+              echo "PostgreSQL is ready"
+              break
+            fi
+            echo "Waiting for PostgreSQL... $i/15"
+            sleep 2
+          done
       
       - name: Run tests
         env:
           DATABASE_URL: postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu
+          PYTHONPATH: .
         run: |
           pytest tests/ -v --tb=short
       
@@ -49,10 +67,23 @@ jobs:
     name: Deploy to Server
     needs: test
     runs-on: ubuntu-latest
+    if: success() && github.ref == 'refs/heads/main'
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          port: ${{ secrets.SERVER_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "."
+          target: "~/app"
+          strip_components: 0
+          overwrite: true
       
       - name: Deploy with Docker Compose
         uses: appleboy/ssh-action@v1.0.3
@@ -61,15 +92,34 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           port: ${{ secrets.SERVER_PORT }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
           script: |
+            set -e
+            
+            echo "Starting deployment..."
             cd ~/app
             
-        
-            git pull origin main
+            # Создаем .env файл
+            echo "📝 Creating .env file..."
+            cat > .env << EOF
+            POSTGRES_PASSWORD=${{ secrets.DB_PASSWORD }}
+            DATABASE_URL=postgresql+psycopg://kubsu:${{ secrets.DB_PASSWORD }}@postgres:5432/kubsu
+            EOF
             
+            # Останавливаем старые контейнеры
+            echo "Stopping old containers..."
+            docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
             
-            docker-compose down
-            docker-compose up -d --build
+            # Запускаем новые контейнеры
+            echo "Starting new containers..."
+            docker compose up -d --build 2>/dev/null || docker-compose up -d --build
             
+            # Проверяем статус
+            echo "Checking container status..."
+            docker compose ps 2>/dev/null || docker-compose ps
             
+            # Очищаем старые образы
+            echo "🧹 Cleaning up..."
             docker system prune -f
+            
+            echo "Deployment completed successfully!"
