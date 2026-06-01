@@ -1,7 +1,10 @@
-name: CI/CD Pipeline
+name: Run Tests
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -13,14 +16,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: List files for debugging
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Contents:"
-          ls -la
-          echo "Docker directory contents:"
-          ls -la docker/ || echo "No docker directory"
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -66,78 +61,8 @@ jobs:
           DATABASE_URL: postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu
           PYTHONPATH: .
         run: |
-          if [ -d "tests" ]; then
-            pytest tests/ -v --tb=short
-          else
-            echo "Tests not found in docker/tests"
-            ls -la
-            exit 1
-          fi
+          pytest tests/ -v --tb=short
       
       - name: Stop PostgreSQL
         if: always()
         run: docker stop postgres-test || true
-
-  deploy:
-    name: Deploy to Server
-    needs: test
-    runs-on: ubuntu-latest
-    if: success() && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Copy files to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          port: ${{ secrets.SERVER_PORT }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker/"
-          target: "~/app"
-          strip_components: 1
-          overwrite: true
-      
-      - name: Deploy with Docker Compose
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          port: ${{ secrets.SERVER_PORT }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          script: |
-            set -e
-            
-            echo "Starting deployment..."
-            cd ~/app
-            
-            echo "Directory structure:"
-            ls -la
-            
-            # Создаем .env файл
-            echo "Creating .env file..."
-            cat > .env << EOF
-            POSTGRES_PASSWORD=${{ secrets.DB_PASSWORD }}
-            DATABASE_URL=postgresql+psycopg://kubsu:${{ secrets.DB_PASSWORD }}@postgres:5432/kubsu
-            EOF
-            
-            # Останавливаем старые контейнеры
-            echo "Stopping old containers..."
-            docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
-            
-            # Запускаем новые контейнеры
-            echo "Starting new containers..."
-            docker compose up -d --build 2>/dev/null || docker-compose up -d --build
-            
-            # Проверяем статус
-            echo "Checking container status..."
-            docker compose ps 2>/dev/null || docker-compose ps
-            
-            # Очищаем старые образы
-            echo "Cleaning up..."
-            docker system prune -f
-            
-            echo "Deployment completed successfully!"
